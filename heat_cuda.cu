@@ -89,29 +89,39 @@ float walltime() {
     gettimeofday(&t, NULL);
     return (t.tv_sec + 1e-6 * t.tv_usec);
 }
+/*Error checking for cuda functions*/
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+   if (code != cudaSuccess) 
+   {
+      fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+      if (abort) exit(code);
+   }
+}
 
 /* Allocate arrays on GPU */
 void device_allocation(){
     int GRID = sizeof(int)*GRID_SIZE[0]*GRID_SIZE[1];
     
-    cudaMalloc(&temperature_device[0], GRID);
-    cudaMalloc(&temperature_device[1],GRID);
-    cudaMalloc(&material_device, GRID);
+   gpuErrchk( cudaMalloc(&temperature_device[0], GRID));
+   gpuErrchk( cudaMalloc(&temperature_device[1],GRID));
+   gpuErrchk( cudaMalloc(&material_device, GRID));
 }
 
 /* Transfer input to GPU */
 void transfer_to_gpu(){
     int GRID = sizeof(int)*GRID_SIZE[0]*GRID_SIZE[1];
 
-    cudaMemcpy(temperature_device[0], temperature,GRID,cudaMemcpyHostToDevice);
-    cudaMemcpy(material_device, material,GRID,cudaMemcpyHostToDevice);
+   gpuErrchk( cudaMemcpy(temperature_device[0], temperature,GRID,cudaMemcpyHostToDevice));
+   gpuErrchk( cudaMemcpy(material_device, material,GRID,cudaMemcpyHostToDevice));
 }
 
 /* Transfer output from GPU to CPU */
 void transfer_from_gpu(int step){
     int GRID = sizeof(int)*GRID_SIZE[0]*GRID_SIZE[1];
 
-    cudaMemcpy(temperature,temperature_device[0],GRID, cudaMemcpyDeviceToHost);
+   gpuErrchk( cudaMemcpy(temperature,temperature_device[0],GRID, cudaMemcpyDeviceToHost));
 }
 
 __device__ int ti(int x, int y){
