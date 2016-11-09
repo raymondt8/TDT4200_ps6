@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <cuda.h>
+#include <sys/time.h>
 
 /* Functions to be implemented: */
 float ftcs_solver_gpu ( int step, int block_size_x, int block_size_y );
@@ -58,6 +59,7 @@ const float
 
 /* Size of the computational grid - 1024x1024 square */
 const int GRID_SIZE[2] = {2048, 2048};
+__constant__ int GRID_SIZE_DEVICE[2] = {2048, 2048};
 
 /* Parameters of the simulation: how many steps, and when to cut off the heat */
 const int NSTEPS = 10000;
@@ -90,59 +92,59 @@ float walltime() {
 
 /* Allocate arrays on GPU */
 void device_allocation(){
-    int GRID = sizeof(int)*GRID_SIZE[0]*GRID_SIZE[1]
+    int GRID = sizeof(int)*GRID_SIZE[0]*GRID_SIZE[1];
     
-    cudaMalloc(&temperature[0], GRID);
+    cudaMalloc(&temperature_device[0], GRID);
     cudaMalloc(&temperature_device[1],GRID);
     cudaMalloc(&material_device, GRID);
 }
 
 /* Transfer input to GPU */
 void transfer_to_gpu(){
-    int GRID = sizeof(int)*GRID_SIZE[0]*GRID_SIZE[1]
+    int GRID = sizeof(int)*GRID_SIZE[0]*GRID_SIZE[1];
 
-    cudaMemcpy(device_tremperature[0], temperature,GRID,cudaMemcpyHostToDevice);
-    cudaMemcpy(device_material, material,GRID,cudaMemcpyHostToDevice);
+    cudaMemcpy(temperature_device[0], temperature,GRID,cudaMemcpyHostToDevice);
+    cudaMemcpy(material_device, material,GRID,cudaMemcpyHostToDevice);
 }
 
 /* Transfer output from GPU to CPU */
 void transfer_from_gpu(int step){
-    int GRID = sizeof(int)*GRID_SIZE[0]*GRID_SIZE[1]
+    int GRID = sizeof(int)*GRID_SIZE[0]*GRID_SIZE[1];
 
-    cudaMemcpy(temperatur,edevice_temperature[0],GRID, cudaMemcpyDeviceToHost);
+    cudaMemcpy(temperature,temperature_device[0],GRID, cudaMemcpyDeviceToHost);
 }
 
-__device__ int ti(int x, int y, int *GRID_SIZE){
+__device__ int ti(int x, int y){
     if(x < 0){
        x++;
     }
-    if(x >= GRID_SIZE[0]){
+    if(x >= GRID_SIZE_DEVICE[0]){
         x--;
     } 
     if(y < 0){
         y++;
     }
-    if(y >= GRID_SIZE[1]){
+    if(y >= GRID_SIZE_DEVICE[1]){
 	y--;
     }
-    return (y * GRID_SIZE[0] + x);
+    return (y * GRID_SIZE_DEVICE[0] + x);
 }
-__device__ int mi(int x, int y,int *GRID_SIZE){
-    return(y*GRID_SIZE[0] + x);
+__device__ int mi(int x, int y){
+    return(y*GRID_SIZE_DEVICE[0] + x);
 }
 /* Plain/global memory only kernel*/
-__global__ void  ftcs_kernel(int step, float *device_temperature, float *device_material ){
+__global__ void  ftcs_kernel(int step, float **temperature_device, float *material_device, int BLOCKX, int BLOCKY ){
     int i = blockIdx.x * BLOCKX + threadIdx.x;
     int j = blockIdx.y * BLOCKY + threadIdx.y;
     
-    float *in = device_temperature[step%2];
-    float *out = device_temperature[step%2];
+    float *in = temperature_device[step%2];
+    float *out = temperature_device[(step+1)%2];
 
-    out[ti(i,j)] = in[ti(i,j)] + device_material[mi(i,j)]*
-			(in[ti(i+1,y)] + 
-			in[ti(i-1,y)] + 
+    out[ti(i,j)] = in[ti(i,j)] + material_device[mi(i,j)]*
+			(in[ti(i+1,j)] + 
+			in[ti(i-1,j)] + 
 			in[ti(i,j+1)] + 
-			in[ti(i,y-1)] - 
+			in[ti(i,j-1)] - 
 			4*in[ti(i,j)]); 
 }
 
@@ -158,13 +160,13 @@ __global__ void  ftcs_kernel_texture( /* Add arguments here */ ){
 /* External heat kernel, should do the same work as the external
  * heat function in the serial code 
  */
-__global__ void external_heat_kernel(int step, float *device_temperature, int *GRID_SIZE){
+__global__ void external_heat_kernel(int step, float **temperature_device, int BLOCKX, int BLOCKY){
     int i = blockIdx.x * BLOCKX + threadIdx.x;
     int j = blockIdx.y * BLOCKY + threadIdx.y;
     
-    if(i>=GRID_SIZE[0]/4 && i<= 3*GRID_SIZE[0]/4){
-	if(j >= GRID_SIZE[1]/2 - GRID_SIZE[1]/16 && j<= GRID_SIZE[1]/2 + GRID_SIZE[1]/16){
-	    device_temperature[step%2][ti(i,j)] = 100;
+    if(i>=GRID_SIZE_DEVICE[0]/4 && i<= 3*GRID_SIZE_DEVICE[0]/4){
+	if(j >= GRID_SIZE_DEVICE[1]/2 - GRID_SIZE_DEVICE[1]/16 && j<= GRID_SIZE_DEVICE[1]/2 + GRID_SIZE_DEVICE[1]/16){
+	    temperature_device[step%2][ti(i,j)] = 100;
 	}
     }
     
@@ -175,11 +177,11 @@ __global__ void external_heat_kernel(int step, float *device_temperature, int *G
  */
 float ftcs_solver_gpu( int step, int block_size_x, int block_size_y ){
     float time = -1.0;
-    dim3 gridBlock(GRID_SIZE[0]/block_size_x,GRID_SIZE[1]);
-    dim3 threadBlock(block_size_x,block_size_y);
+    dim3 dimGrid(GRID_SIZE[0]/block_size_x,GRID_SIZE[1]);
+    dim3 dimBlock(block_size_x,block_size_y);
     
     float start_gpu = walltime();
-    fstcs_kernel<<<gridBlock,thread_block>>>(step, device_temperature, device_material);  
+    ftcs_kernel<<<dimGrid,dimBlock>>>(step, temperature_device, material_device,block_size_x,block_size_y);  
     float end_gpu = walltime();
     time = end_gpu - start_gpu;
     
@@ -190,14 +192,8 @@ float ftcs_solver_gpu( int step, int block_size_x, int block_size_y ){
  * should return the execution time of the kernel
  */
 float ftcs_solver_gpu_shared( int step, int block_size_x, int block_size_y ){
+
     float time = -1.0;
-    dim3 gridBlock(GRID_SIZE[0]/block_size_x,GRID_SIZE[1]);
-    dim3 threadBlock(block_size_x,block_size_y);
-    
-    float start_gpu = walltime();
-    external_heat_kernel<<<gridBlock,thread_block>>>(step, device_temperature, GRID_SIZE);  
-    float end_gpu = walltime();
-    time = end_gpu - start_gpu;
     return time;
 }
 
@@ -213,6 +209,11 @@ float ftcs_solver_gpu_texture( int step, int block_size_x, int block_size_y ){
 
 /* Set up and call external_heat_kernel */
 void external_heat_gpu( int step, int block_size_x, int block_size_y ){
+    dim3 dimGrid(GRID_SIZE[0]/block_size_x,GRID_SIZE[1]);
+    dim3 dimBlock(block_size_x,block_size_y);
+    
+   external_heat_kernel<<<dimGrid,dimBlock>>>(step, temperature_device, block_size_x,block_size_y);  
+
 }
 
 void print_gpu_info(){
