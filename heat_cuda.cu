@@ -83,6 +83,7 @@ float
     *material_device,           // Material constants
     *temperature_device_0,      // Temperature field, 2 arrays 
     *temperature_device_1;
+
 /* Timing */
 float walltime() {
     static struct timeval t;
@@ -147,8 +148,7 @@ __global__ void  ftcs_kernel(int step, float *temperature_device_0, float *tempe
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     float *in, *out;
-    if(step == 0 && i==0 && j==0)printf("Checkpoint \n"); 
-    
+
     if(step%2 ==0){
         in = temperature_device_0;
         out = temperature_device_1;
@@ -165,27 +165,42 @@ __global__ void  ftcs_kernel(int step, float *temperature_device_0, float *tempe
 			4*in[ti(i,j)]); 
 }
 
-/* Shared memory kernel */
-__global__ void  ftcs_kernel_shared(int step, float **temperature_device, float *material_device){
- /*   const int TILE_WIDTH = 16;
-   if(step == 0){
-       __shared__ int dev_temperature[TILE_WIDTH][TILE_WIDTH];
-       __shared__ int dev_material[TILE_WIDTH][TILE_WIDTH];
-
-        int i = blockIdx.x * blockDim.x + threadIdx.x;
-        int j = blockIdx.y * blockDim.y + threadIdx.y;
-       
-        float *in = temperature_device[step%2];
-        float *out = temperature_device[(step+1)%2];
-
-        for(int i = 0; i < GRID_SIZE[0]/TILE_WIDTH;i++ ){
-	    dev_temperature[threadIdx.y][threadIdx.x] = in[ti(row,i*TILE_WIDT + threadIdx.x)];
-	    dev_material[threadIdx.y][threadIdx.x] = material[mi(row,i*TILE_WIDTH + threadIdx.x)]
-	
-            __syncthreads();
-	}
+/*Function checking if the thread is accessing within shared memory space, if  not, data is collected from global memory*/
+__device__ float getSharedTemp(float *in, float *temp_shared, int x, int y, int blockDimX){
+    if(x >= 0 && x < blockDim.x && y >= 0  && y < blockDim.y){
+        return temp_shared[y*blockDimX + x];
+    }else{ 
+        return in[ti(blockIdx.x * blockDim.x + threadIdx.x,blockIdx.y * blockDim.y + threadIdx.y)];
     }
-*/
+}
+/* Shared memory kernel */
+__global__ void  ftcs_kernel_shared(int step, float *temperature_device_0, float *temperature_device_1, float *material_device, int blockDimX){
+    float *in, *out;
+  
+    if(step%2 ==0){
+        in = temperature_device_0;
+        out = temperature_device_1;
+    }else{
+        in = temperature_device_1;
+	out = temperature_device_0; 
+    }
+    
+    extern __shared__ float temp_shared[];
+  
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    temp_shared[threadIdx.y*blockDimX + threadIdx.x] = in[ti(i,j)];
+ 
+    __syncthreads();
+
+    out[ti(i,j)] = 
+ getSharedTemp(in,temp_shared,threadIdx.x,threadIdx.y,blockDimX) + material_device[mi(i,j)]*
+	(getSharedTemp(in,temp_shared,threadIdx.x+1,threadIdx.y, blockDimX) + 
+	getSharedTemp(in,temp_shared,threadIdx.x-1,threadIdx.y, blockDimX)  + 
+	getSharedTemp(in,temp_shared,threadIdx.x,threadIdx.y+1, blockDimX)  + 
+	getSharedTemp(in,temp_shared,threadIdx.x,threadIdx.y-1, blockDimX)  - 
+	4*temp_shared[threadIdx.y*blockDimX + threadIdx.x]);   
+
 }
 
 /* Texture memory kernel */
@@ -229,8 +244,16 @@ float ftcs_solver_gpu( int step, int block_size_x, int block_size_y ){
  * should return the execution time of the kernel
  */
 float ftcs_solver_gpu_shared( int step, int block_size_x, int block_size_y ){
-
     float time = -1.0;
+    dim3 dimGrid(GRID_SIZE[0]/block_size_x,GRID_SIZE[1]/block_size_y);
+    dim3 dimBlock(block_size_x,block_size_y);
+    int sharedArraySize =block_size_x*block_size_y*sizeof(float); 
+    
+    float start_gpu = walltime();
+    ftcs_kernel_shared<<<dimGrid,dimBlock,sharedArraySize>>>(step, temperature_device_0,temperature_device_1, material_device, block_size_x);  
+    float end_gpu = walltime();
+    time = end_gpu - start_gpu;
+
     return time;
 }
 
@@ -311,13 +334,13 @@ int main ( int argc, char **argv ){
         else{
             time = ftcs_solver_gpu(step, block_size_x, block_size_y);
         }
-        
         add_time(time);
         
         if((step % SNAPSHOT) == 0){
+	printf("%s\n", cudaGetErrorString(cudaGetLastError()));
             // Transfer output from device, and write to file
-           transfer_from_gpu(step);
-           write_temp(step);
+            transfer_from_gpu(step);
+            write_temp(step);
         }
 
 	
