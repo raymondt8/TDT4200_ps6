@@ -170,7 +170,7 @@ __device__ float getSharedTemp(float *in, float *temp_shared, int x, int y, int 
     if(x >= 0 && x < blockDim.x && y >= 0  && y < blockDim.y){
         return temp_shared[y*blockDimX + x];
     }else{ 
-        return in[ti(blockIdx.x * blockDim.x + threadIdx.x,blockIdx.y * blockDim.y + threadIdx.y)];
+        return in[ti(blockIdx.x * blockDim.x + x,blockIdx.y * blockDim.y + y)];
     }
 }
 /* Shared memory kernel */
@@ -190,11 +190,9 @@ __global__ void  ftcs_kernel_shared(int step, float *temperature_device_0, float
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     temp_shared[threadIdx.y*blockDimX + threadIdx.x] = in[ti(i,j)];
- 
+    
     __syncthreads();
-
-    out[ti(i,j)] = 
- getSharedTemp(in,temp_shared,threadIdx.x,threadIdx.y,blockDimX) + material_device[mi(i,j)]*
+    out[ti(i,j)] = getSharedTemp(in,temp_shared,threadIdx.x,threadIdx.y,blockDimX) + material_device[mi(i,j)]*
 	(getSharedTemp(in,temp_shared,threadIdx.x+1,threadIdx.y, blockDimX) + 
 	getSharedTemp(in,temp_shared,threadIdx.x-1,threadIdx.y, blockDimX)  + 
 	getSharedTemp(in,temp_shared,threadIdx.x,threadIdx.y+1, blockDimX)  + 
@@ -205,6 +203,8 @@ __global__ void  ftcs_kernel_shared(int step, float *temperature_device_0, float
 
 /* Texture memory kernel */
 __global__ void  ftcs_kernel_texture( /* Add arguments here */ ){
+
+
 }
 
 
